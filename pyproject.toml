@@ -1,0 +1,10 @@
+[project]
+name = "ai-music-production"
+version = "0.1.0"
+description = "AI music production engine MVP"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

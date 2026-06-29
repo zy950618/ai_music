@@ -1,0 +1,13 @@
+services:
+  ai-music-web:
+    build: .
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./runs:/app/runs
+    environment:
+      MUSIC_AI_GENERATION_PROVIDER: "mock"
+      MUSIC_AI_MODEL_NAME: "mock_sine_arranger"
+      MUSIC_AI_MODEL_VERSION: "0.1.0"
+      MUSIC_AI_GENERATION_TIMEOUT: "120"
+

@@ -1,0 +1,32 @@
+{
+  "providers": [
+    {
+      "id": "mock_default",
+      "provider": "mock",
+      "model_name": "mock_sine_arranger",
+      "model_version": "0.1.0",
+      "enabled": true,
+      "priority": 100,
+      "supported_modes": ["song", "instrumental", "bgm", "loop", "short_video", "children", "classical", "game", "film"],
+      "supports_vocals": true,
+      "supports_instrumental": true,
+      "max_duration_sec": 600,
+      "notes": "Deterministic internal generator for development and validation."
+    },
+    {
+      "id": "local_command_template",
+      "provider": "local_command",
+      "model_name": "replace-with-local-model",
+      "model_version": "replace-with-version",
+      "enabled": false,
+      "priority": 10,
+      "supported_modes": ["song", "instrumental", "bgm", "loop", "short_video", "children", "classical", "game", "film"],
+      "supports_vocals": true,
+      "supports_instrumental": true,
+      "max_duration_sec": 300,
+      "command": ["python", "my_generator.py", "{output_path}", "{duration_sec}", "{bpm}"],
+      "timeout_sec": 600,
+      "notes": "Enable and replace command when a real local generator is installed."
+    }
+  ]
+}

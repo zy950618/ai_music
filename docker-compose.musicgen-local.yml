@@ -1,0 +1,17 @@
+services:
+  ai-music-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.musicgen-local
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./runs:/app/runs
+      - ./models:/models
+    environment:
+      AUDIOCRAFT_CACHE_DIR: "/models/audiocraft"
+      MUSIC_AI_GENERATION_PROVIDER: "local_command"
+      MUSIC_AI_MODEL_NAME: "facebook/musicgen-small"
+      MUSIC_AI_MODEL_VERSION: "audiocraft-local"
+      MUSIC_AI_GENERATION_TIMEOUT: "900"
+      MUSIC_AI_LOCAL_COMMAND: '["python","tools/musicgen_local_adapter.py","--output","{output_path}","--duration-sec","{duration_sec}","--prompt","{prompt}","--model","facebook/musicgen-small"]'

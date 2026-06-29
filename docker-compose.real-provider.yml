@@ -1,0 +1,18 @@
+services:
+  ai-music-web:
+    build: .
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./runs:/app/runs
+    environment:
+      MUSIC_AI_GENERATION_PROVIDER: "local_command"
+      MUSIC_AI_MODEL_NAME: "real_http_music_provider"
+      MUSIC_AI_MODEL_VERSION: "adapter-v1"
+      MUSIC_AI_GENERATION_TIMEOUT: "900"
+      MUSIC_AI_LOCAL_COMMAND: '["python","tools/music_provider_adapter.py","--output","{output_path}","--duration-sec","{duration_sec}","--bpm","{bpm}","--prompt","{prompt}","--version-id","{version_id}","--key-index","{key_index}"]'
+      MUSIC_AI_PROVIDER_ENDPOINT: "${MUSIC_AI_PROVIDER_ENDPOINT}"
+      MUSIC_AI_PROVIDER_API_KEY: "${MUSIC_AI_PROVIDER_API_KEY}"
+      MUSIC_AI_PROVIDER_TIMEOUT: "900"
+      MUSIC_AI_PROVIDER_POLL_INTERVAL: "5"
+

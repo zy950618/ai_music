@@ -1,0 +1,48 @@
+{
+  "providers": [
+    {
+      "id": "real_http_music_provider",
+      "provider": "local_command",
+      "model_name": "real-http-music-provider",
+      "model_version": "adapter-v1",
+      "enabled": true,
+      "priority": 1,
+      "supported_modes": ["song", "instrumental", "bgm", "loop", "short_video", "children", "classical", "game", "film"],
+      "supports_vocals": true,
+      "supports_instrumental": true,
+      "max_duration_sec": 300,
+      "command": [
+        "python",
+        "tools/music_provider_adapter.py",
+        "--output",
+        "{output_path}",
+        "--duration-sec",
+        "{duration_sec}",
+        "--bpm",
+        "{bpm}",
+        "--prompt",
+        "{prompt}",
+        "--version-id",
+        "{version_id}",
+        "--key-index",
+        "{key_index}"
+      ],
+      "timeout_sec": 900,
+      "notes": "Generic real-provider bridge. Set MUSIC_AI_PROVIDER_ENDPOINT and MUSIC_AI_PROVIDER_API_KEY."
+    },
+    {
+      "id": "mock_fallback",
+      "provider": "mock",
+      "model_name": "mock_sine_arranger",
+      "model_version": "0.1.0",
+      "enabled": true,
+      "priority": 100,
+      "supported_modes": ["song", "instrumental", "bgm", "loop", "short_video", "children", "classical", "game", "film"],
+      "supports_vocals": true,
+      "supports_instrumental": true,
+      "max_duration_sec": 600,
+      "notes": "Fallback for local validation."
+    }
+  ]
+}
+
