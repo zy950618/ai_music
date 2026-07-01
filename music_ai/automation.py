@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from .engine import CreationEngine
+from .external_tools import HARD_GATE_KEYS, validate_prompt_optimizer_change
 from .generation import GenerationProviderRegistry
-from .models import MusicCreationRequest, MusicCreationResult
+from .models import EvolutionPolicyProposal, EvolutionSignal, MusicCreationRequest, MusicCreationResult
 from .repository import ResultRepository
 from .skills import get_rework_rule
 
@@ -102,14 +103,14 @@ class DailyAutomationService:
                 continue
             root_task_id = source.get("rework_root_task_id") or item.task_id
             current_root_count = root_counts.get(root_task_id, self._root_rework_count(root_task_id))
-            if current_root_count >= 3:
-                skipped.append({"task_id": item.task_id, "version_id": item.version_id, "reason": "task_rework_budget_exhausted"})
-                continue
             if item.delivery_block_only:
                 skipped.append({"task_id": item.task_id, "reason": "delivery_block_only"})
                 continue
             if not item.auto_rework_allowed or item.requires_human_review:
                 skipped.append({"task_id": item.task_id, "reason": "requires_human_review"})
+                continue
+            if current_root_count >= 3:
+                skipped.append({"task_id": item.task_id, "version_id": item.version_id, "reason": "task_rework_budget_exhausted"})
                 continue
             if item.blocked_reason:
                 skipped.append({"task_id": item.task_id, "version_id": item.version_id, "reason": item.blocked_reason})
@@ -121,6 +122,13 @@ class DailyAutomationService:
             result.rework_reason = item.failure_code
             result.rework_root_task_id = root_task_id
             result.rework_depth = int(source.get("rework_depth", 0)) + 1
+            optimized_at = datetime.now().isoformat(timespec="seconds")
+            for child_version in result.versions:
+                child_version.parent_version_id = item.version_id
+                child_version.optimizedAt = optimized_at
+                child_version.updatedAt = optimized_at
+                if child_version.loop_state:
+                    child_version.loop_state.parent_version_id = item.version_id
             result.rework_history = list(source.get("rework_history", []))
             result.rework_history.append(
                 {
@@ -181,6 +189,13 @@ class DailyAutomationService:
         result.rework_reason = failure_code
         result.rework_root_task_id = root_task_id
         result.rework_depth = int(source.get("rework_depth", 0)) + 1
+        optimized_at = datetime.now().isoformat(timespec="seconds")
+        for child_version in result.versions:
+            child_version.parent_version_id = version["version_id"]
+            child_version.optimizedAt = optimized_at
+            child_version.updatedAt = optimized_at
+            if child_version.loop_state:
+                child_version.loop_state.parent_version_id = version["version_id"]
         result.rework_history = list(source.get("rework_history", []))
         result.rework_history.append(
             {
@@ -205,6 +220,166 @@ class DailyAutomationService:
             json.dump(report, handle, ensure_ascii=False, indent=2)
         return report
 
+    def build_evolution_signals(self, report: dict[str, Any]) -> list[EvolutionSignal]:
+        created_at = datetime.now().isoformat(timespec="seconds")
+        signals: list[EvolutionSignal] = []
+        candidate_count = int(report.get("candidate_count") or 0)
+        qa_fail_count = int(report.get("qa_fail_count") or 0)
+        if candidate_count and qa_fail_count / candidate_count > 0.35:
+            signals.append(
+                EvolutionSignal(
+                    signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                    created_at=created_at,
+                    source="qa",
+                    metric="qa_fail_rate",
+                    value=round(qa_fail_count / candidate_count, 4),
+                    threshold=0.35,
+                    severity="warning",
+                    evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                )
+            )
+        for failure_code, count in report.get("failure_counts", {}).items():
+            if candidate_count and int(count) / candidate_count > 0.25:
+                signals.append(
+                    EvolutionSignal(
+                        signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                        created_at=created_at,
+                        source="rework",
+                        metric=f"failure_code:{failure_code}",
+                        value=int(count),
+                        threshold="25_percent_of_candidates",
+                        severity="warning",
+                        evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                    )
+                )
+        provider_failure_rate = report.get("provider_failure_rate")
+        if provider_failure_rate is not None and float(provider_failure_rate) > 0.15:
+            signals.append(
+                EvolutionSignal(
+                    signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                    created_at=created_at,
+                    source="provider",
+                    metric="provider_failure_rate",
+                    value=round(float(provider_failure_rate), 4),
+                    threshold=0.15,
+                    severity="warning",
+                    evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                )
+            )
+        rework_success_rate = report.get("rework_success_rate")
+        if rework_success_rate is not None and float(rework_success_rate) < 0.40:
+            signals.append(
+                EvolutionSignal(
+                    signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                    created_at=created_at,
+                    source="rework",
+                    metric="rework_success_rate",
+                    value=round(float(rework_success_rate), 4),
+                    threshold=0.40,
+                    severity="warning",
+                    evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                )
+            )
+        rights_block_rate = report.get("rights_block_rate")
+        if rights_block_rate is None:
+            rights_missing_count = int(report.get("rights_missing_count") or 0)
+            task_count = int(report.get("task_count") or 0)
+            rights_block_rate = rights_missing_count / task_count if task_count else None
+        if rights_block_rate is not None and float(rights_block_rate) > 0.20:
+            signals.append(
+                EvolutionSignal(
+                    signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                    created_at=created_at,
+                    source="rights",
+                    metric="rights_block_rate",
+                    value=round(float(rights_block_rate), 4),
+                    threshold=0.20,
+                    severity="warning",
+                    evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                )
+            )
+        originality_high_count = int(report.get("originality_high_count") or 0)
+        if candidate_count and originality_high_count / candidate_count > 0.05:
+            signals.append(
+                EvolutionSignal(
+                    signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                    created_at=created_at,
+                    source="qa",
+                    metric="originality_high_rate",
+                    value=round(originality_high_count / candidate_count, 4),
+                    threshold=0.05,
+                    severity="critical",
+                    evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                )
+            )
+        human_review_backlog = int(report.get("human_review_backlog") or 0)
+        if human_review_backlog > 10:
+            signals.append(
+                EvolutionSignal(
+                    signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                    created_at=created_at,
+                    source="ops",
+                    metric="human_review_backlog",
+                    value=human_review_backlog,
+                    threshold=10,
+                    severity="warning",
+                    evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                )
+            )
+        quota_usage_rate = report.get("quota_usage_rate")
+        if quota_usage_rate is not None and float(quota_usage_rate) >= 0.90:
+            signals.append(
+                EvolutionSignal(
+                    signal_id=f"signal_{uuid.uuid4().hex[:8]}",
+                    created_at=created_at,
+                    source="ops",
+                    metric="quota_usage_rate",
+                    value=round(float(quota_usage_rate), 4),
+                    threshold=0.90,
+                    severity="critical",
+                    evidence_refs=[str(report.get("batch_id") or "daily_report")],
+                )
+            )
+        return signals
+
+    def propose_evolution_policies(self, signals: list[EvolutionSignal]) -> list[EvolutionPolicyProposal]:
+        proposals: list[EvolutionPolicyProposal] = []
+        for signal in signals:
+            target = "generation_router" if signal.metric == "qa_fail_rate" else "rework_rules"
+            after = {"reduce_blind_generation": True, "investigate_metric": signal.metric}
+            proposals.append(self._policy_proposal(target, {"current_metric": signal.metric}, after, [signal.signal_id]))
+        return proposals
+
+    def _policy_proposal(
+        self,
+        target: str,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        evidence_refs: list[str],
+    ) -> EvolutionPolicyProposal:
+        risk_flags: list[str] = []
+        status = "proposed"
+        approval_status = "required"
+        gate_validation = validate_prompt_optimizer_change(after)
+        if target in HARD_GATE_KEYS or not gate_validation["passed"]:
+            risk_flags.append("hard_gate_override_rejected")
+            risk_flags.extend(str(reason) for reason in gate_validation["blocked_reasons"])
+            status = "rejected"
+            approval_status = "rejected"
+        return EvolutionPolicyProposal(
+            proposal_id=f"proposal_{uuid.uuid4().hex[:8]}",
+            created_at=datetime.now().isoformat(timespec="seconds"),
+            target=target,
+            before=before,
+            after=after,
+            expected_effect="reduce repeated production failures without weakening hard gates",
+            risk_flags=risk_flags,
+            requires_human_approval=True,
+            approval_status=approval_status,
+            rollback_plan=["restore previous policy snapshot", "keep version and QA history unchanged"],
+            status=status,
+        )
+
     def latest_daily_reports(self) -> list[dict[str, Any]]:
         reports: list[dict[str, Any]] = []
         for path in sorted((self.workspace / "batches").glob("batch_*/daily_report.json"), reverse=True):
@@ -216,16 +391,16 @@ class DailyAutomationService:
 
     def _daily_requests(self, count: int) -> list[MusicCreationRequest]:
         templates = [
-            ("短视频开场", "前三秒抓耳的城市流行电子", "short_video", ["pop", "electronic"], ["catchy", "bright"], 18, True),
-            ("学习 Lo-fi", "适合夜间学习的低干扰循环", "bgm", ["lo-fi"], ["calm", "focused"], 30, False),
-            ("游戏循环", "轻快独立游戏地图循环", "game", ["chiptune", "orchestral"], ["playful", "loopable"], 24, False),
-            ("国风片段", "温柔国风剧情剪辑配乐", "film", ["chinese", "cinematic"], ["gentle", "nostalgic"], 28, False),
-            ("儿童副歌", "简单正向的儿童旋律歌", "children", ["children", "pop"], ["simple", "happy"], 20, True),
-            ("广告 BGM", "干净积极的产品展示音乐", "short_video", ["corporate", "pop"], ["clean", "uplifting"], 15, False),
-            ("R&B 夜色", "夜晚情绪化 R&B 歌曲", "song", ["r&b", "soul"], ["smooth", "warm"], 26, True),
-            ("电子运动", "运动剪辑用电子律动", "short_video", ["edm"], ["energetic", "driving"], 22, False),
-            ("钢琴主题", "古典感钢琴短主题", "classical", ["classical", "piano"], ["elegant", "clear"], 30, False),
-            ("影视铺垫", "短剧转折前的情绪铺垫", "film", ["cinematic"], ["tense", "emotional"], 25, False),
+            ("短视频完整歌", "适合短视频使用的城市流行电子完整作品", "short_video", ["pop", "electronic"], ["catchy", "bright"], 180, True),
+            ("学习 Lo-fi", "适合夜间学习的低干扰完整作品", "bgm", ["lo-fi"], ["calm", "focused"], 180, False),
+            ("游戏配乐", "轻快独立游戏地图完整配乐", "game", ["chiptune", "orchestral"], ["playful", "loopable"], 180, False),
+            ("国风配乐", "温柔国风剧情完整配乐", "film", ["chinese", "cinematic"], ["gentle", "nostalgic"], 180, False),
+            ("儿童歌曲", "简单正向的儿童旋律完整歌曲", "children", ["children", "pop"], ["simple", "happy"], 180, True),
+            ("广告 BGM", "干净积极的产品展示完整音乐", "short_video", ["corporate", "pop"], ["clean", "uplifting"], 180, False),
+            ("R&B 夜色", "夜晚情绪化 R&B 完整歌曲", "song", ["r&b", "soul"], ["smooth", "warm"], 180, True),
+            ("电子运动", "运动剪辑用电子律动完整作品", "short_video", ["edm"], ["energetic", "driving"], 180, False),
+            ("钢琴主题", "古典感钢琴完整主题", "classical", ["classical", "piano"], ["elegant", "clear"], 180, False),
+            ("影视铺垫", "短剧转折前的情绪完整配乐", "film", ["cinematic"], ["tense", "emotional"], 180, False),
         ]
         requests: list[MusicCreationRequest] = []
         for index in range(count):
@@ -257,7 +432,7 @@ class DailyAutomationService:
             for failure in version.failure_codes:
                 failures[failure] = failures.get(failure, 0) + 1
         qa_pass = sum(1 for version in all_versions if (version.score_total or 0) >= 80 and not version.failure_codes)
-        return {
+        report = {
             "batch_id": batch_id,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "task_count": len(results),
@@ -265,8 +440,10 @@ class DailyAutomationService:
             "qa_pass_count": qa_pass,
             "qa_fail_count": len(all_versions) - qa_pass,
             "rights_missing_count": sum(1 for result in results if result.rights_status == "missing"),
+            "rights_status_counts": self._rights_status_counts(results),
             "average_score": round(sum(version.score_total or 0 for version in all_versions) / max(1, len(all_versions)), 2),
             "failure_counts": failures,
+            "loop_state_counts": self._loop_state_counts(all_versions),
             "provider_usage": self._provider_usage(all_versions),
             "style_distribution": self._style_distribution(results),
             "route_summary": self._route_summary(all_versions),
@@ -274,6 +451,23 @@ class DailyAutomationService:
             "rework_queue": [asdict(item) for item in self.build_rework_queue()],
             "rework_budget": self._rework_budget_summary(),
         }
+        signals = self.build_evolution_signals(report)
+        report["evolution_signals"] = [asdict(signal) for signal in signals]
+        report["evolution_policy_proposals"] = [asdict(proposal) for proposal in self.propose_evolution_policies(signals)]
+        return report
+
+    def _rights_status_counts(self, results: list[MusicCreationResult]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for result in results:
+            counts[result.rights_status] = counts.get(result.rights_status, 0) + 1
+        return counts
+
+    def _loop_state_counts(self, versions: list[Any]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for version in versions:
+            decision = version.loop_state.decision if version.loop_state else "missing"
+            counts[decision] = counts.get(decision, 0) + 1
+        return counts
 
     def _provider_usage(self, versions: list[Any]) -> dict[str, int]:
         usage: dict[str, int] = {}
@@ -390,7 +584,7 @@ class DailyAutomationService:
     def _adjust_request(self, request: MusicCreationRequest, failure: str) -> MusicCreationRequest:
         data = request.__dict__.copy()
         if failure in {"BAD_DURATION", "STRUCTURE_TOO_SHORT"}:
-            data["duration_sec"] = max(12, int(request.duration_sec) + 8)
+            data["duration_sec"] = min(300, max(180, int(request.duration_sec) + 30))
         elif failure == "LYRIC_MISSING":
             data["lyrics_input"] = data.get("lyrics_input") or f"[Chorus]\n{request.theme}，让旋律重新开始"
             data["vocal_required"] = True
@@ -400,6 +594,7 @@ class DailyAutomationService:
         if failure == "WEAK_HOOK":
             data["mood"] = list(dict.fromkeys(list(request.mood) + ["hook_forward", "catchy"]))
             data["bpm"] = max(108, int(request.bpm or 108))
+            data["duration_sec"] = max(180, int(request.duration_sec))
         elif failure == "AUDIENCE_MISMATCH":
             data["audience"] = f"{request.audience}; refined for stronger target-listener fit"
             data["mood"] = list(dict.fromkeys(list(request.mood) + ["audience_fit"]))

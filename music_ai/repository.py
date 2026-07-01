@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import ExportFile, MusicCreationResult, MusicVersion, SongSection
+from .models import EmotionProfile, ExportFile, LyricSection, MusicCreationResult, MusicVersion, SongLyrics, SongSection, VersionLoopState
 
 
 class ResultRepository:
@@ -29,6 +29,14 @@ class ResultRepository:
             result = json.load(handle)
         result["_result_path"] = str(result_path)
         return result
+
+    def save_result(self, result: dict[str, Any]) -> None:
+        task_id = str(result["task_id"])
+        result_path = self.workspace / task_id / "result.json"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {key: value for key, value in result.items() if key != "_result_path"}
+        with result_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
 
     def rework_history(self) -> dict[str, Any]:
         results = self.list_results()
@@ -92,6 +100,25 @@ def _count_by(items: list[dict[str, Any]], key: str) -> dict[str, int]:
 def result_from_dict(data: dict[str, Any]) -> MusicCreationResult:
     versions: list[MusicVersion] = []
     for version in data["versions"]:
+        lyrics_data_raw = version.get("lyrics_data")
+        lyrics_data = None
+        if isinstance(lyrics_data_raw, dict):
+            lyrics_data = SongLyrics(
+                title=lyrics_data_raw["title"],
+                language=lyrics_data_raw["language"],
+                theme=lyrics_data_raw["theme"],
+                hook=lyrics_data_raw["hook"],
+                sections=[LyricSection(**section) for section in lyrics_data_raw.get("sections", [])],
+                emotional_arc=lyrics_data_raw.get("emotional_arc", ""),
+                imagery_keywords=lyrics_data_raw.get("imagery_keywords", []),
+                rhyme_notes=lyrics_data_raw.get("rhyme_notes", []),
+                singability_notes=lyrics_data_raw.get("singability_notes", []),
+                safety_notes=lyrics_data_raw.get("safety_notes", []),
+            )
+        emotion_raw = version.get("emotion_profile")
+        emotion_profile = EmotionProfile(**emotion_raw) if isinstance(emotion_raw, dict) else None
+        loop_raw = version.get("loop_state")
+        loop_state = VersionLoopState(**loop_raw) if isinstance(loop_raw, dict) else None
         versions.append(
             MusicVersion(
                 version_id=version["version_id"],
@@ -104,18 +131,30 @@ def result_from_dict(data: dict[str, Any]) -> MusicCreationResult:
                 model_provider=version["model_provider"],
                 model_name=version["model_name"],
                 failure_codes=version.get("failure_codes", []),
+                work_id=version.get("work_id", data.get("work_id", "")),
+                parent_version_id=version.get("parent_version_id"),
+                version_number=float(version.get("version_number", 1.0)),
+                seed=version.get("seed"),
                 generation_route=version.get("generation_route", {}),
                 audio_path=version.get("audio_path"),
                 download_url=version.get("download_url"),
                 bpm=version.get("bpm"),
                 key=version.get("key"),
                 lyrics=version.get("lyrics"),
+                lyrics_data=lyrics_data,
+                lyric_translation=version.get("lyric_translation"),
+                emotion_profile=emotion_profile,
                 model_version=version.get("model_version"),
                 audio_analysis=version.get("audio_analysis", {}),
                 score_total=version.get("score_total"),
                 score_breakdown=version.get("score_breakdown", {}),
                 quality_report=version.get("quality_report", {}),
+                loop_state=loop_state,
                 export_files=[ExportFile(**export) for export in version.get("export_files", [])],
+                createdAt=version.get("createdAt", ""),
+                generatedAt=version.get("generatedAt", ""),
+                updatedAt=version.get("updatedAt", ""),
+                optimizedAt=version.get("optimizedAt"),
             )
         )
     return MusicCreationResult(
@@ -133,4 +172,7 @@ def result_from_dict(data: dict[str, Any]) -> MusicCreationResult:
         rework_root_task_id=data.get("rework_root_task_id"),
         rework_depth=int(data.get("rework_depth", 0)),
         rework_history=data.get("rework_history", []),
+        createdAt=data.get("createdAt", ""),
+        updatedAt=data.get("updatedAt", ""),
+        lastGeneratedAt=data.get("lastGeneratedAt"),
     )

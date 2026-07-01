@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .audio import generate_mock_wav
+from .audio import generate_mock_wav, mock_arrangement_metadata
 from .models import MusicCreationRequest
 
 
@@ -33,6 +34,15 @@ class GenerationProviderSpec:
     max_duration_sec: int = 600
     command: tuple[str, ...] = field(default_factory=tuple)
     timeout_sec: int = 120
+    adapter_type: str = "mock_file"
+    requires_api_key: bool = False
+    license_scope: str = "internal_validation"
+    commercial_use_allowed: bool = False
+    risk_flags: tuple[str, ...] = field(default_factory=tuple)
+    integration_status: str = "local_candidate"
+    paid_dependency: bool = False
+    production_enabled: bool = False
+    license_evidence_refs: tuple[str, ...] = field(default_factory=tuple)
     notes: str = ""
 
     def can_handle(self, request: MusicCreationRequest) -> bool:
@@ -52,6 +62,14 @@ class GenerationProviderSpec:
             reasons.append("duration_too_long")
         if self.provider == "local_command" and not self.command:
             reasons.append("command_missing")
+        if self.paid_dependency:
+            reasons.append("paid_dependency")
+        if self.integration_status == "research_only":
+            reasons.append("research_only")
+        if self.integration_status == "reject":
+            reasons.append("reject")
+        if self.requires_api_key and not os.environ.get("MUSIC_AI_PROVIDER_API_KEY"):
+            reasons.append("api_key_missing")
         return tuple(reasons)
 
     def to_route_config(self) -> GenerationRouteConfig:
@@ -88,6 +106,15 @@ class GenerationProviderRegistry:
                     max_duration_sec=int(item.get("max_duration_sec", 600)),
                     command=tuple(item.get("command", [])),
                     timeout_sec=int(item.get("timeout_sec", 120)),
+                    adapter_type=item.get("adapter_type", "mock_file"),
+                    requires_api_key=bool(item.get("requires_api_key", False)),
+                    license_scope=item.get("license_scope", "internal_validation"),
+                    commercial_use_allowed=bool(item.get("commercial_use_allowed", False)),
+                    risk_flags=tuple(item.get("risk_flags", [])),
+                    integration_status=item.get("integration_status", "local_candidate"),
+                    paid_dependency=bool(item.get("paid_dependency", False)),
+                    production_enabled=bool(item.get("production_enabled", False)),
+                    license_evidence_refs=tuple(item.get("license_evidence_refs", [])),
                     notes=item.get("notes", ""),
                 )
             )
@@ -111,6 +138,8 @@ class GenerationProviderRegistry:
                     "priority": provider.priority,
                     "can_handle": not reasons,
                     "rejection_reasons": list(reasons),
+                    "integration_status": provider.integration_status,
+                    "paid_dependency": provider.paid_dependency,
                 }
             )
         candidates = [provider for provider in self.providers if provider.can_handle(request)]
@@ -123,6 +152,15 @@ class GenerationProviderRegistry:
             raise ValueError(f"no generation provider can handle mode={request.mode} vocal_required={request.vocal_required}")
         selected = sorted(candidates, key=lambda provider: provider.priority)[0]
         return selected, self._selection_trace(request, selected, evaluations, preferred_provider_id, "priority")
+
+    def selectable_providers(self, request: MusicCreationRequest, preferred_provider_id: str | None = None) -> tuple[tuple[GenerationProviderSpec, dict[str, object]], ...]:
+        selected, trace = self.select_with_trace(request, preferred_provider_id=preferred_provider_id)
+        if preferred_provider_id:
+            return ((selected, trace),)
+        routes: list[tuple[GenerationProviderSpec, dict[str, object]]] = [(selected, trace)]
+        for provider in sorted((item for item in self.providers if item.can_handle(request) and item.id != selected.id), key=lambda item: item.priority):
+            routes.append((provider, self._selection_trace(request, provider, trace["evaluations"], preferred_provider_id, "fallback_priority")))
+        return tuple(routes)
 
     def _selection_trace(
         self,
@@ -137,6 +175,15 @@ class GenerationProviderRegistry:
             "selected_provider": selected.provider,
             "selected_model_name": selected.model_name,
             "selected_model_version": selected.model_version,
+            "selected_adapter_type": selected.adapter_type,
+            "selected_license_scope": selected.license_scope,
+            "selected_commercial_use_allowed": selected.commercial_use_allowed,
+            "selected_requires_api_key": selected.requires_api_key,
+            "selected_risk_flags": list(selected.risk_flags),
+            "selected_integration_status": selected.integration_status,
+            "selected_paid_dependency": selected.paid_dependency,
+            "selected_production_enabled": selected.production_enabled,
+            "selected_license_evidence_refs": list(selected.license_evidence_refs),
             "selection_reason": reason,
             "preferred_provider_id": preferred_provider_id,
             "request_mode": request.mode,
@@ -170,6 +217,8 @@ class GenerationJob:
     duration_sec: int
     bpm: int
     key_index: int
+    seed: str | int | None = None
+    payload: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -213,7 +262,23 @@ class GenerationRouter:
         raise ValueError(f"unsupported generation provider: {self.config.provider}")
 
     def _generate_mock(self, job: GenerationJob) -> GenerationArtifact:
-        generate_mock_wav(job.target_path, job.duration_sec, job.bpm, key_index=job.key_index)
+        seed_text = str(job.seed) if job.seed is not None else job.prompt
+        generate_mock_wav(
+            job.target_path,
+            job.duration_sec,
+            job.bpm,
+            key_index=job.key_index,
+            seed_text=seed_text,
+            payload=job.payload,
+        )
+        payload_hash = self._payload_hash(job)
+        arrangement = mock_arrangement_metadata(
+            job.duration_sec,
+            job.bpm,
+            key_index=job.key_index,
+            seed_text=seed_text,
+            payload=job.payload,
+        )
         return GenerationArtifact(
             audio_source="mock_file",
             audio_path=str(job.target_path),
@@ -228,12 +293,23 @@ class GenerationRouter:
                 "duration_sec": job.duration_sec,
                 "bpm": job.bpm,
                 "key_index": job.key_index,
+                "seed": job.seed,
+                "prompt_hash": hashlib.sha256(job.prompt.encode("utf-8")).hexdigest(),
+                "arrangement_layers": arrangement["arrangement_layers"],
+                "instrument_plan": arrangement["instrument_plan"],
+                "section_timeline": arrangement["section_timeline"],
+                "full_duration_sec": job.duration_sec,
+                "payload_schema_version": "generation_payload_v1",
+                "outbound_payload_hash": payload_hash,
             },
         )
 
     def _generate_local_command(self, job: GenerationJob) -> GenerationArtifact:
         if not self.config.command:
             raise ValueError("local_command provider requires MUSIC_AI_LOCAL_COMMAND or explicit command config")
+        payload_path = job.target_path.with_suffix(".generation_payload.json")
+        payload = self._payload_for_job(job)
+        payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         command = tuple(self._format_arg(arg, job) for arg in self.config.command)
         env = os.environ.copy()
         cwd = str(Path.cwd())
@@ -256,6 +332,11 @@ class GenerationRouter:
                 "target_path": str(job.target_path),
                 "duration_sec": job.duration_sec,
                 "bpm": job.bpm,
+                "seed": job.seed,
+                "prompt_hash": hashlib.sha256(job.prompt.encode("utf-8")).hexdigest(),
+                "payload_schema_version": "generation_payload_v1",
+                "outbound_payload_hash": self._payload_hash(job),
+                "outbound_payload_path": str(payload_path),
                 "returncode": completed.returncode,
                 "stdout_tail": completed.stdout[-500:],
                 "stderr_tail": completed.stderr[-500:],
@@ -268,6 +349,25 @@ class GenerationRouter:
             duration_sec=job.duration_sec,
             bpm=job.bpm,
             prompt=job.prompt,
+            payload_path=str(job.target_path.with_suffix(".generation_payload.json")),
             version_id=job.version_id,
             key_index=job.key_index,
         )
+
+    def _payload_for_job(self, job: GenerationJob) -> dict[str, object]:
+        payload = {
+            "schema_version": "generation_payload_v1",
+            "version_id": job.version_id,
+            "prompt_text": job.prompt,
+            "duration_sec": job.duration_sec,
+            "bpm": job.bpm,
+            "key_index": job.key_index,
+            "seed": job.seed,
+            "output_format": job.target_path.suffix.lstrip(".") or "wav",
+        }
+        payload.update(job.payload)
+        return payload
+
+    def _payload_hash(self, job: GenerationJob) -> str:
+        raw = json.dumps(self._payload_for_job(job), ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()

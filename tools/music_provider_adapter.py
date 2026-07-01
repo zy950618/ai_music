@@ -15,7 +15,8 @@ def main() -> None:
     parser.add_argument("--output", required=True, help="Target audio file path to create")
     parser.add_argument("--duration-sec", required=True, type=int)
     parser.add_argument("--bpm", required=True, type=int)
-    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--prompt", default="")
+    parser.add_argument("--payload-file", default=None, help="Structured generation payload JSON written by Generation Router")
     parser.add_argument("--version-id", required=True)
     parser.add_argument("--key-index", required=True, type=int)
     parser.add_argument("--endpoint", default=os.environ.get("MUSIC_AI_PROVIDER_ENDPOINT"))
@@ -29,18 +30,30 @@ def main() -> None:
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
+    payload = _load_payload_file(args.payload_file)
+    payload.update({
         "prompt": args.prompt,
+        "prompt_text": payload.get("prompt_text") or args.prompt,
         "duration_sec": args.duration_sec,
         "bpm": args.bpm,
         "version_id": args.version_id,
         "key_index": args.key_index,
         "output_format": output.suffix.lstrip(".") or "wav",
-    }
+    })
     response = _request_json("POST", args.endpoint, payload, args.api_key, args.timeout_sec)
     final = _wait_for_audio_response(response, args.api_key, args.timeout_sec, args.poll_interval_sec)
     _write_audio(final, output, args.api_key, args.timeout_sec)
     print(json.dumps({"output": str(output), "bytes": output.stat().st_size}, ensure_ascii=False))
+
+
+def _load_payload_file(path: str | None) -> dict[str, object]:
+    if not path:
+        return {}
+    with Path(path).open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise RuntimeError("payload file must contain a JSON object")
+    return payload
 
 
 def _request_json(method: str, url: str, payload: dict[str, object] | None, api_key: str | None, timeout_sec: int) -> dict[str, object]:
@@ -108,4 +121,3 @@ def _write_audio(response: dict[str, object], output: Path, api_key: str | None,
 
 if __name__ == "__main__":
     main()
-

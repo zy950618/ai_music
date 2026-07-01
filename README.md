@@ -1,4 +1,4 @@
-# AI 音乐制作项目
+ AI 音乐制作项目
 
 AI 音乐设计。
 
@@ -13,12 +13,13 @@ AI 音乐设计。
 - 注册外部 AI 音乐下载 URL，并进入同一套作品库、QA、授权流程。
 - 基础剪辑：trim、fade、loop。
 - 基础处理：peak normalize、silence trim。
-- 导出 preview、master、short cut、loop、license pack。
+- 导出 master、short cut、loop、license pack。
 - 授权缺失时阻断 master 正式交付，授权配置后解除阻断。
-- 授权完成后生成交付包 ZIP，包含 master、preview、license pack、metadata、acceptance report、manifest、lyrics。
+- 授权完成后生成交付包 ZIP，包含 master、license pack、metadata、acceptance report、manifest、lyrics。
 - 分项质量验收：音频质量、旋律、朗朗上口、结构、编曲、歌词可唱性、受众匹配、原创安全、交付准备。
 - WAV 音频分析：采样率、峰值、RMS、估算 LUFS、剪辑风险、首尾静音、静音比例。
-- Skills/Agent 注册表：17 个基础 Skills、26 个生产 Agent、LOOP 返工规则。
+- Skills/Agent 注册表：23 个基础 Skills、26 个生产 Agent、LOOP 返工规则。
+- Ponytail 底层工程执行 Skills：`ponytail`、`ponytail-review`、`ponytail-audit`、`ponytail-debt`、`ponytail-gain`、`ponytail-help`。
 - Generation Router：支持默认 mock 生成和 `local_command` 本地模型/脚本适配，生成结果统一进入 QA、授权和交付流程。
 - Provider 能力表：用 JSON 描述生成器支持的类型、人声/纯音乐能力、最大时长、优先级和本地命令。
 - 生成路由解释：每个候选记录 `generation_route.selection`，包含选中 provider、选择原因和候选 provider 评估。
@@ -29,10 +30,10 @@ AI 音乐设计。
 ## 常用命令
 
 ```powershell
-python -m music_ai.cli demo --output runs\demo --duration 20
-python -m music_ai.cli demo --output runs\demo_rights --duration 12 --configure-rights
+python -m music_ai.cli demo --output runs\demo --duration 180
+python -m music_ai.cli demo --output runs\demo_rights --duration 180 --configure-rights
 python -m music_ai.cli create --request examples\creation_request.json --output runs\from_json --candidates 3
-python -m music_ai.cli import-url --request examples\creation_request.json --url https://example.test/generated.wav --duration 42 --output runs\external
+python -m music_ai.cli import-url --request examples\creation_request.json --url https://example.test/generated.wav --duration 180 --output runs\external
 python -m music_ai.cli daily --output runs\daily --count 10 --candidates 3
 python -m music_ai.cli schedule --output runs\daily --count 10 --candidates 3 --rework-limit 5 --run-hour 1 --run-minute 30
 python -m music_ai.cli rework --output runs\daily --limit 5

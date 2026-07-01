@@ -63,7 +63,7 @@ def evaluate_version(version: MusicVersion, request: MusicCreationRequest) -> di
         _dimension("lyric_singability", "Lyric singability", _lyric_singability(version, request), "Lyrics can be sung naturally when vocals are required."),
         _dimension("audience_fit", "Audience fit", _audience_fit(version, request, standard), "Matches the target listener's liking and usage context."),
         _dimension("originality_safety", "Originality safety", _originality_safety(request), "Avoids protected melody, lyric, voice, and reference-copy risk."),
-        _dimension("delivery_readiness", "Delivery readiness", _delivery_readiness(version), "Preview or source is available and exports are traceable."),
+        _dimension("delivery_readiness", "Delivery readiness", _delivery_readiness(version), "Complete master or source is available and exports are traceable."),
     ]
     weights = {
         "audio_quality": 10,
@@ -177,6 +177,25 @@ def _arrangement_fit(version: MusicVersion, request: MusicCreationRequest) -> in
 def _lyric_singability(version: MusicVersion, request: MusicCreationRequest) -> int:
     if not request.vocal_required:
         return 86
+    if version.lyrics_data:
+        section_names = {section.name.lower() for section in version.lyrics_data.sections}
+        line_count = sum(len(section.lines) for section in version.lyrics_data.sections)
+        score = 88
+        if not version.lyrics_data.hook:
+            score -= 28
+        if not any("chorus" in name for name in section_names):
+            score -= 24
+        if "bridge" not in section_names:
+            score -= 14
+        if "final chorus" not in section_names:
+            score -= 12
+        if line_count < 30:
+            score -= 18
+        if not version.lyrics_data.imagery_keywords:
+            score -= 8
+        if not version.lyrics_data.singability_notes:
+            score -= 8
+        return score
     if not version.lyrics:
         return 40
     lines = [line for line in version.lyrics.splitlines() if line and not line.startswith("[")]
@@ -227,6 +246,9 @@ def _failure_codes(dimensions: list[dict[str, Any]], version: MusicVersion, requ
         failures.append("BAD_DURATION")
     if request.vocal_required and not version.lyrics:
         failures.append("LYRIC_MISSING")
+    if request.vocal_required and version.lyrics_data:
+        lyric_failures = _lyric_failure_codes(version)
+        failures.extend(code for code in lyric_failures if code not in failures)
     if request.reference_profile_id:
         failures.append("ORIGINALITY_REVIEW_REQUIRED")
     if request.duration_sec < 10:
@@ -244,6 +266,30 @@ def _failure_codes(dimensions: list[dict[str, Any]], version: MusicVersion, requ
     return failures
 
 
+def _lyric_failure_codes(version: MusicVersion) -> list[str]:
+    lyrics = version.lyrics_data
+    if lyrics is None:
+        return []
+    section_names = {section.name.lower() for section in lyrics.sections}
+    line_count = sum(len(section.lines) for section in lyrics.sections)
+    failures: list[str] = []
+    if line_count < 30:
+        failures.append("LYRIC_TOO_SHORT")
+    if not lyrics.hook:
+        failures.append("LYRIC_NO_HOOK")
+    if not any("chorus" in name for name in section_names):
+        failures.append("LYRIC_NO_CHORUS")
+    if "bridge" not in section_names:
+        failures.append("LYRIC_NO_BRIDGE")
+    if "final chorus" not in section_names:
+        failures.append("LYRIC_NO_FINAL_CHORUS")
+    if not lyrics.emotional_arc or not lyrics.imagery_keywords:
+        failures.append("EMOTION_MISMATCH")
+    if not lyrics.singability_notes:
+        failures.append("LYRIC_UNSINGABLE")
+    return failures
+
+
 def _rework_targets(failure_codes: list[str]) -> list[dict[str, str]]:
     targets = {
         "BAD_DURATION": ("Structure Arranger", "adjust section timing"),
@@ -253,5 +299,13 @@ def _rework_targets(failure_codes: list[str]) -> list[dict[str, str]]:
         "WEAK_HOOK": ("Melody Composer", "strengthen hook and motif repetition"),
         "AUDIENCE_MISMATCH": ("Audience Profiler", "restate listener standard and adapt brief"),
         "TECHNICAL_AUDIO_FAIL": ("Audio Analyzer", "inspect source audio and regenerate or process"),
+        "DUPLICATE_CANDIDATE": ("Generation Router", "regenerate duplicate candidate with unique seed, prompt, and audio artifact"),
+        "LYRIC_TOO_SHORT": ("Lyric Writer", "expand lyric sections before generation"),
+        "LYRIC_NO_HOOK": ("Lyric Writer", "write an explicit hook line"),
+        "LYRIC_NO_CHORUS": ("Lyric Writer", "add chorus sections"),
+        "LYRIC_NO_BRIDGE": ("Lyric Writer", "add a bridge section"),
+        "LYRIC_NO_FINAL_CHORUS": ("Lyric Writer", "add an intensified final chorus"),
+        "LYRIC_UNSINGABLE": ("Lyric Editor", "repair line length, stress, and breath points"),
+        "EMOTION_MISMATCH": ("Lyric Emotion Agent", "realign emotion arc and imagery"),
     }
     return [{"failure_code": code, "agent": targets[code][0], "action": targets[code][1]} for code in failure_codes if code in targets]
